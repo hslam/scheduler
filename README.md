@@ -22,16 +22,17 @@ import (
 )
 
 func main() {
-	p := scheduler.New(64)
+	s := scheduler.New(64, nil)
 	wg := &sync.WaitGroup{}
 	for i := 0; i < 100000; i++ {
 		wg.Add(1)
 		task := func() {
 			wg.Done()
 		}
-		p.Schedule(task)
+		s.Schedule(task)
 	}
 	wg.Wait()
+	s.Close()
 }
 ```
 
