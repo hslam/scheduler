@@ -19,11 +19,10 @@ package main
 import (
 	"github.com/hslam/scheduler"
 	"sync"
-	"time"
 )
 
 func main() {
-	p := scheduler.New(64, time.Second)
+	p := scheduler.New(64)
 	wg := &sync.WaitGroup{}
 	for i := 0; i < 100000; i++ {
 		wg.Add(1)

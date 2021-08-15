@@ -6,55 +6,60 @@ package scheduler
 
 import (
 	"runtime"
-	"time"
+	"sync"
+	"sync/atomic"
 )
-
-const idle = time.Second
 
 // Scheduler represents a task scheduler.
 type Scheduler struct {
-	idleTime time.Duration
-	tasks    chan func()
-	workers  chan struct{}
+	lock       sync.Mutex
+	cond       sync.Cond
+	pending    []func()
+	tasks      int64
+	workers    int64
+	maxWorkers int64
 }
 
 // New returns a new task scheduler.
-func New(maxWorkers int, idleTime time.Duration) *Scheduler {
+func New(maxWorkers int) *Scheduler {
 	if maxWorkers == 0 {
 		maxWorkers = runtime.NumCPU()
 	}
-	if idleTime == 0 {
-		idleTime = idle
-	}
 	s := &Scheduler{
-		idleTime: idleTime,
-		tasks:    make(chan func()),
-		workers:  make(chan struct{}, maxWorkers),
+		maxWorkers: int64(maxWorkers),
 	}
+	s.cond.L = &s.lock
 	return s
 }
 
 // Schedule schedules the task.
 func (s *Scheduler) Schedule(task func()) {
-	select {
-	case s.tasks <- task:
-	case s.workers <- struct{}{}:
-		go s.worker(task)
-	default:
-		go task()
+	workers := atomic.LoadInt64(&s.workers)
+	if atomic.AddInt64(&s.tasks, 1) > workers && workers < s.maxWorkers {
+		if atomic.AddInt64(&s.workers, 1) <= s.maxWorkers {
+			go s.worker(task)
+			return
+		}
 	}
+	s.lock.Lock()
+	s.pending = append(s.pending, task)
+	s.lock.Unlock()
+	s.cond.Signal()
 }
 
 func (s *Scheduler) worker(task func()) {
-	defer func() { <-s.workers }()
 	for {
 		task()
-		t := time.NewTimer(s.idleTime)
-		select {
-		case task = <-s.tasks:
-			t.Stop()
-		case <-t.C:
-			return
+		atomic.AddInt64(&s.tasks, -1)
+		s.lock.Lock()
+		for {
+			if len(s.pending) > 0 {
+				task = s.pending[0]
+				s.pending = s.pending[1:]
+				break
+			}
+			s.cond.Wait()
 		}
+		s.lock.Unlock()
 	}
 }
