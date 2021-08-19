@@ -1,4 +1,10 @@
 # scheduler
+[![PkgGoDev](https://pkg.go.dev/badge/github.com/hslam/scheduler)](https://pkg.go.dev/github.com/hslam/scheduler)
+[![Build Status](https://github.com/hslam/scheduler/workflows/build/badge.svg)](https://github.com/hslam/scheduler/actions)
+[![codecov](https://codecov.io/gh/hslam/scheduler/branch/master/graph/badge.svg)](https://codecov.io/gh/hslam/scheduler)
+[![Go Report Card](https://goreportcard.com/badge/github.com/hslam/scheduler)](https://goreportcard.com/report/github.com/hslam/scheduler)
+[![LICENSE](https://img.shields.io/github/license/hslam/scheduler.svg?style=flat-square)](https://github.com/hslam/scheduler/blob/master/LICENSE)
+
 Package scheduler implements a task scheduler.
 
 ## Get started
