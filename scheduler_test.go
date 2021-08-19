@@ -14,7 +14,9 @@ func TestSchedulerPreheat(t *testing.T) {
 		total       = 10000000
 		concurrency = 256
 	)
-	s := New(concurrency, nil)
+	opts := DefaultOptions()
+	opts.Threshold = 0
+	s := New(concurrency, opts)
 	wg := &sync.WaitGroup{}
 	for i := 0; i < total; i++ {
 		wg.Add(1)
@@ -32,7 +34,9 @@ func TestScheduler(t *testing.T) {
 		total       = 10000000
 		concurrency = 1
 	)
-	s := New(concurrency, nil)
+	opts := DefaultOptions()
+	opts.Threshold = 0
+	s := New(concurrency, opts)
 	wg := &sync.WaitGroup{}
 	start := time.Now()
 	for i := 0; i < total; i++ {
@@ -76,7 +80,9 @@ func TestSchedulerConcurrency(t *testing.T) {
 		total       = 10000000
 		concurrency = 256
 	)
-	s := New(concurrency, nil)
+	opts := DefaultOptions()
+	opts.Threshold = 0
+	s := New(concurrency, opts)
 	wg := &sync.WaitGroup{}
 	start := time.Now()
 	for i := 0; i < total; i++ {
@@ -116,6 +122,23 @@ func TestSchedulerBatchConcurrency(t *testing.T) {
 }
 
 func TestSchedulerOptions(t *testing.T) {
+	{
+		var (
+			total       = 1000000
+			concurrency = 0
+		)
+		s := New(concurrency, nil)
+		wg := &sync.WaitGroup{}
+		for i := 0; i < total; i++ {
+			wg.Add(1)
+			job := func() {
+				wg.Done()
+			}
+			s.Schedule(job)
+		}
+		wg.Wait()
+		s.Close()
+	}
 	{
 		var (
 			total       = 1000000
