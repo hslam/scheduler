@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	threshold = 0
+	threshold = 2
 	idleTime  = time.Second
 	interval  = time.Second
 )
