@@ -92,16 +92,20 @@ func (s *scheduler) Schedule(task func()) {
 	if atomic.LoadInt32(&s.closed) > 0 {
 		panic("schedule tasks on a closed scheduler")
 	}
-	workers := atomic.LoadInt64(&s.workers)
-	if atomic.AddInt64(&s.tasks, 1) > workers && workers < s.maxWorkers {
-		if atomic.AddInt64(&s.workers, 1) <= s.maxWorkers {
-			s.wg.Add(1)
-			w := &worker{}
-			s.lock.Lock()
-			s.running[w] = struct{}{}
-			s.lock.Unlock()
-			go w.run(s, task)
-			return
+	for {
+		workers := atomic.LoadInt64(&s.workers)
+		if atomic.AddInt64(&s.tasks, 1) > workers && workers < s.maxWorkers {
+			if atomic.CompareAndSwapInt64(&s.workers, workers, workers+1) {
+				s.wg.Add(1)
+				w := &worker{}
+				s.lock.Lock()
+				s.running[w] = struct{}{}
+				s.lock.Unlock()
+				go w.run(s, task)
+				return
+			}
+		} else {
+			break
 		}
 	}
 	s.lock.Lock()
