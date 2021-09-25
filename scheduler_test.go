@@ -48,7 +48,30 @@ func TestScheduler(t *testing.T) {
 	}
 	wg.Wait()
 	d := time.Now().Sub(start)
-	t.Logf("Concurrency:%d, Batch %t, Time:%v, %vns/op", concurrency, DefaultOptions().Threshold > 1, d, int64(d)/int64(total))
+	t.Logf("Concurrency:%d, Batch %t, Time:%v, %vns/op", concurrency, opts.Threshold > 1, d, int64(d)/int64(total))
+	s.Close()
+}
+
+func TestSchedulerUnlimited(t *testing.T) {
+	var (
+		total       = 10000000
+		concurrency = Unlimited
+	)
+	opts := DefaultOptions()
+	opts.Threshold = 0
+	s := New(concurrency, opts)
+	wg := &sync.WaitGroup{}
+	start := time.Now()
+	for i := 0; i < total; i++ {
+		wg.Add(1)
+		job := func() {
+			wg.Done()
+		}
+		s.Schedule(job)
+	}
+	wg.Wait()
+	d := time.Now().Sub(start)
+	t.Logf("Concurrency:unlimited, Batch %t, Time:%v, %vns/op", opts.Threshold > 1, d, int64(d)/int64(total))
 	s.Close()
 }
 
@@ -94,7 +117,7 @@ func TestSchedulerConcurrency(t *testing.T) {
 	}
 	wg.Wait()
 	d := time.Now().Sub(start)
-	t.Logf("Concurrency:%d, Batch %t, Time:%v, %vns/op", concurrency, DefaultOptions().Threshold > 1, d, int64(d)/int64(total))
+	t.Logf("Concurrency:%d, Batch %t, Time:%v, %vns/op", concurrency, opts.Threshold > 1, d, int64(d)/int64(total))
 	s.Close()
 }
 

@@ -5,16 +5,18 @@
 package scheduler
 
 import (
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
 const (
-	threshold = 2
+	threshold = 1
 	idleTime  = time.Second
 	interval  = time.Second
+
+	// Unlimited represents the unlimited number of goroutines.
+	Unlimited = 0
 )
 
 // Scheduler represents a task scheduler.
@@ -30,6 +32,7 @@ type Scheduler interface {
 // Options represents options
 type Options struct {
 	// Threshold option represents the threshold at which batch task is enabled.
+	// If the threshold option is greater than 1, tasks will be scheduled in batches.
 	Threshold int
 	// IdleTime option represents the max idle time of the worker.
 	IdleTime time.Duration
@@ -62,8 +65,9 @@ type scheduler struct {
 
 // New returns a new task scheduler.
 func New(maxWorkers int, opts *Options) Scheduler {
+	// If the max number of workers is not greater than zero, the number of goroutines will not be limited.
 	if maxWorkers <= 0 {
-		maxWorkers = runtime.NumCPU()
+		maxWorkers = Unlimited
 	}
 	if opts == nil {
 		opts = DefaultOptions()
@@ -92,16 +96,16 @@ func (s *scheduler) Schedule(task func()) {
 	if atomic.LoadInt32(&s.closed) > 0 {
 		panic("schedule tasks on a closed scheduler")
 	}
+	atomic.AddInt64(&s.tasks, 1)
 	for {
 		workers := atomic.LoadInt64(&s.workers)
-		if atomic.AddInt64(&s.tasks, 1) > workers && workers < s.maxWorkers {
-			if atomic.CompareAndSwapInt64(&s.workers, workers, workers+1) {
-				s.wg.Add(1)
-				w := &worker{}
-				s.lock.Lock()
-				s.running[w] = struct{}{}
-				s.lock.Unlock()
-				go w.run(s, task)
+		if atomic.LoadInt64(&s.tasks) > workers && (s.maxWorkers == Unlimited || workers < s.maxWorkers) {
+			if s.maxWorkers == Unlimited {
+				atomic.AddInt64(&s.workers, 1)
+				s.runWorker(task)
+				return
+			} else if atomic.CompareAndSwapInt64(&s.workers, workers, workers+1) {
+				s.runWorker(task)
 				return
 			}
 		} else {
@@ -112,6 +116,15 @@ func (s *scheduler) Schedule(task func()) {
 	s.pending = append(s.pending, task)
 	s.lock.Unlock()
 	s.cond.Signal()
+}
+
+func (s *scheduler) runWorker(task func()) {
+	s.wg.Add(1)
+	w := &worker{}
+	s.lock.Lock()
+	s.running[w] = struct{}{}
+	s.lock.Unlock()
+	go w.run(s, task)
 }
 
 // NumWorkers returns the number of workers.
@@ -202,7 +215,7 @@ func (w *worker) run(s *scheduler, task func()) {
 		}
 		s.lock.Lock()
 		for {
-			if s.opts.Threshold > 1 && len(s.pending) > maxWorkers*s.opts.Threshold {
+			if maxWorkers != Unlimited && s.opts.Threshold > 1 && len(s.pending) > maxWorkers*s.opts.Threshold {
 				alloc := len(s.pending) / maxWorkers
 				batch = s.pending[:alloc]
 				s.pending = s.pending[alloc:]
@@ -217,6 +230,7 @@ func (w *worker) run(s *scheduler, task func()) {
 				s.lock.Unlock()
 				atomic.AddInt64(&s.workers, -1)
 				s.wg.Done()
+				s.cond.Signal()
 				return
 			}
 		}
