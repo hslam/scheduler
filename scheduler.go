@@ -58,7 +58,7 @@ type scheduler struct {
 	running    map[*worker]struct{}
 	workers    int64
 	maxWorkers int64
-	done       chan struct{}
+	close      chan struct{}
 	closed     int32
 	opts       Options
 }
@@ -82,7 +82,7 @@ func New(maxWorkers int, opts *Options) Scheduler {
 	s := &scheduler{
 		running:    make(map[*worker]struct{}),
 		maxWorkers: int64(maxWorkers),
-		done:       make(chan struct{}),
+		close:      make(chan struct{}),
 		opts:       *opts,
 	}
 	s.cond.L = &s.lock
@@ -135,7 +135,7 @@ func (s *scheduler) NumWorkers() int {
 // Close closes the task scheduler.
 func (s *scheduler) Close() {
 	if atomic.CompareAndSwapInt32(&s.closed, 0, 1) {
-		close(s.done)
+		close(s.close)
 	}
 	s.wg.Wait()
 }
@@ -143,11 +143,11 @@ func (s *scheduler) Close() {
 func (s *scheduler) run() {
 	defer s.wg.Done()
 	ticker := time.NewTicker(s.opts.Interval)
-	var doned bool
+	var done bool
 	var idle bool
 	var lastIdleTime time.Time
 	for {
-		if !doned {
+		if !done {
 			select {
 			case <-ticker.C:
 				if atomic.LoadInt64(&s.workers) > 0 && atomic.LoadInt64(&s.workers) > atomic.LoadInt64(&s.tasks) {
@@ -181,9 +181,9 @@ func (s *scheduler) run() {
 					idle = false
 					lastIdleTime = time.Time{}
 				}
-			case <-s.done:
+			case <-s.close:
 				ticker.Stop()
-				doned = true
+				done = true
 			}
 		} else {
 			if atomic.LoadInt64(&s.workers) == 0 {
@@ -230,7 +230,7 @@ func (w *worker) run(s *scheduler, task func()) {
 				s.lock.Unlock()
 				atomic.AddInt64(&s.workers, -1)
 				s.wg.Done()
-				s.cond.Signal()
+				s.cond.Broadcast()
 				return
 			}
 		}
