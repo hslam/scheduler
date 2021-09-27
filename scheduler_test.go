@@ -225,11 +225,6 @@ func TestSchedulerOptions(t *testing.T) {
 		s.Close()
 	}
 	func() {
-		defer func() {
-			if e := recover(); e == nil {
-				t.Error("should panic")
-			}
-		}()
 		var (
 			total       = 1000000
 			concurrency = 0

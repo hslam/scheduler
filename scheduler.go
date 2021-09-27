@@ -94,7 +94,10 @@ func New(maxWorkers int, opts *Options) Scheduler {
 // Schedule schedules the task to an idle worker.
 func (s *scheduler) Schedule(task func()) {
 	if atomic.LoadInt32(&s.closed) > 0 {
-		panic("schedule tasks on a closed scheduler")
+		if task != nil {
+			task()
+		}
+		return
 	}
 	atomic.AddInt64(&s.tasks, 1)
 	for {
