@@ -229,7 +229,8 @@ func (w *worker) run(s *scheduler, task func()) {
 				break
 			}
 			s.cond.Wait()
-			if atomic.LoadInt32(&s.closed) > 0 || atomic.LoadInt32(&w.closed) > 0 {
+			if (atomic.LoadInt32(&s.closed) > 0 || atomic.LoadInt32(&w.closed) > 0) &&
+				!(atomic.LoadInt64(&s.workers) == 1 && atomic.LoadInt64(&s.tasks) > 0) {
 				s.lock.Unlock()
 				atomic.AddInt64(&s.workers, -1)
 				s.wg.Done()
