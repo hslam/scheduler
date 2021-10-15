@@ -266,4 +266,23 @@ func TestSchedulerOptions(t *testing.T) {
 		wg.Wait()
 		s.Close()
 	}
+	{
+		var (
+			total       = 1024
+			concurrency = 64
+		)
+		opts := &Options{}
+		s := New(concurrency, opts)
+		wg := &sync.WaitGroup{}
+		for i := 0; i < total; i++ {
+			wg.Add(1)
+			job := func() {
+				wg.Done()
+				time.Sleep(time.Millisecond)
+			}
+			s.Schedule(job)
+		}
+		s.Close()
+		wg.Wait()
+	}
 }
