@@ -199,8 +199,12 @@ func TestSchedulerOptions(t *testing.T) {
 			s.Schedule(job)
 		}
 		wg.Wait()
-		time.Sleep(time.Millisecond * 10)
+		time.Sleep(interval)
 		s.Close()
+		time.Sleep(interval)
+		if m.numSchedulers() != 0 {
+			t.Error("should be 0")
+		}
 	}
 	{
 		var (

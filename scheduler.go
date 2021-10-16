@@ -5,6 +5,7 @@
 package scheduler
 
 import (
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -49,17 +50,89 @@ func DefaultOptions() *Options {
 	}
 }
 
+type schedulers struct {
+	sync.RWMutex
+	wake   bool
+	active map[*scheduler]struct{}
+}
+
+var m = &schedulers{
+	active: make(map[*scheduler]struct{}),
+}
+
+func (m *schedulers) register(s *scheduler) {
+	m.Lock()
+	m.active[s] = struct{}{}
+	m.Unlock()
+	m.wakeCheck()
+}
+
+func (m *schedulers) unregister(s *scheduler) {
+	m.Lock()
+	delete(m.active, s)
+	m.Unlock()
+}
+
+func (m *schedulers) numSchedulers() int {
+	m.RLock()
+	num := len(m.active)
+	m.RUnlock()
+	return num
+}
+
+func (m *schedulers) wakeCheck() {
+	m.Lock()
+	if !m.wake {
+		m.wake = true
+		go func() {
+			ticker := time.NewTicker(interval / 10)
+			var checks []*scheduler
+			for {
+
+				select {
+				case <-ticker.C:
+					now := time.Now()
+					m.RLock()
+					for s := range m.active {
+						if now.Sub(s.lastCheckTime) > s.opts.Interval {
+							s.lastCheckTime = now
+							checks = append(checks, s)
+						}
+					}
+					m.RUnlock()
+					for i, s := range checks {
+						checks[i] = nil
+						s.check()
+					}
+					checks = checks[:0]
+					m.Lock()
+					if len(m.active) == 0 {
+						m.wake = false
+						ticker.Stop()
+						m.Unlock()
+						return
+					}
+					m.Unlock()
+				}
+				runtime.Gosched()
+			}
+		}()
+	}
+	m.Unlock()
+}
+
 type scheduler struct {
-	lock       sync.RWMutex
-	cond       sync.Cond
-	wg         sync.WaitGroup
-	pending    []func()
-	running    map[*worker]struct{}
-	workers    int
-	maxWorkers int
-	close      chan struct{}
-	closed     int32
-	opts       Options
+	lock          sync.RWMutex
+	cond          sync.Cond
+	wg            sync.WaitGroup
+	pending       []func()
+	running       map[*worker]struct{}
+	workers       int
+	maxWorkers    int
+	lastIdleTime  time.Time
+	lastCheckTime time.Time
+	closed        int32
+	opts          Options
 }
 
 // New returns a new task scheduler.
@@ -81,12 +154,10 @@ func New(maxWorkers int, opts *Options) Scheduler {
 	s := &scheduler{
 		running:    make(map[*worker]struct{}),
 		maxWorkers: maxWorkers,
-		close:      make(chan struct{}),
 		opts:       *opts,
 	}
 	s.cond.L = &s.lock
-	s.wg.Add(1)
-	go s.run()
+	m.register(s)
 	return s
 }
 
@@ -124,69 +195,56 @@ func (s *scheduler) NumWorkers() int {
 // Close closes the task scheduler.
 func (s *scheduler) Close() {
 	if atomic.CompareAndSwapInt32(&s.closed, 0, 1) {
-		close(s.close)
-	}
-	s.wg.Wait()
-}
-
-func (s *scheduler) run() {
-	defer s.wg.Done()
-	ticker := time.NewTicker(s.opts.Interval)
-	var done bool
-	var lastIdleTime time.Time
-	for {
-		if !done {
-			select {
-			case <-ticker.C:
-				s.lock.Lock()
-				if len(s.running) > 0 && len(s.running) > len(s.pending) {
-					if lastIdleTime.IsZero() {
-						lastIdleTime = time.Now()
-					} else if time.Since(lastIdleTime) > s.opts.IdleTime {
-						deletions := len(s.running) - len(s.pending)
-						if deletions > 4 {
-							deletions = deletions / 4
-						} else if deletions > 0 {
-							deletions = 1
-						}
-						for w := range s.running {
-							delete(s.running, w)
-							w.close()
-							deletions--
-							if deletions == 0 {
-								break
-							}
-						}
-						lastIdleTime = time.Time{}
-						s.cond.Broadcast()
-					}
-				} else {
-					lastIdleTime = time.Time{}
-				}
-				s.lock.Unlock()
-			case <-s.close:
-				ticker.Stop()
-				done = true
-				s.lock.Lock()
-				for w := range s.running {
-					w.close()
-				}
-				s.running = make(map[*worker]struct{})
-				for _, task := range s.pending {
-					task()
-				}
-				s.pending = s.pending[:0]
-				s.lock.Unlock()
-				s.cond.Broadcast()
-			}
-		} else {
+		s.lock.Lock()
+		for w := range s.running {
+			w.close()
+		}
+		s.running = make(map[*worker]struct{})
+		for _, task := range s.pending {
+			task()
+		}
+		s.pending = s.pending[:0]
+		s.lock.Unlock()
+		s.cond.Broadcast()
+		for {
 			if s.NumWorkers() == 0 {
 				break
 			}
 			s.cond.Broadcast()
 			time.Sleep(time.Millisecond)
 		}
+		m.unregister(s)
 	}
+	s.wg.Wait()
+}
+
+func (s *scheduler) check() {
+	s.lock.Lock()
+	if len(s.running) > 0 && len(s.running) > len(s.pending) {
+		if s.lastIdleTime.IsZero() {
+			s.lastIdleTime = time.Now()
+		} else if time.Since(s.lastIdleTime) > s.opts.IdleTime {
+			deletions := len(s.running) - len(s.pending)
+			if deletions > 4 {
+				deletions = deletions / 2
+			} else if deletions > 0 {
+				deletions = 1
+			}
+			for w := range s.running {
+				delete(s.running, w)
+				w.close()
+				deletions--
+				if deletions == 0 {
+					break
+				}
+			}
+			s.lastIdleTime = time.Time{}
+			s.cond.Broadcast()
+		}
+	} else {
+		s.lastIdleTime = time.Time{}
+	}
+	s.lock.Unlock()
 }
 
 type worker struct {
