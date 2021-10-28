@@ -12,13 +12,34 @@ import (
 )
 
 const (
-	threshold = 1
-	idleTime  = time.Second
-	interval  = time.Second
+	threshold  = 1
+	idleTime   = time.Second
+	interval   = time.Second
+	numBuckets = 256
 
 	// Unlimited represents the unlimited number of goroutines.
 	Unlimited = 0
 )
+
+var (
+	buckets = func() [numBuckets]*scheduler {
+		var buckets = [numBuckets]*scheduler{}
+		for i := 0; i < numBuckets; i++ {
+			buckets[i] = newScheduler(Unlimited, nil)
+		}
+		return buckets
+	}()
+	seq uint64
+)
+
+// Schedule schedules the task to an idle worker.
+func Schedule(task func()) {
+	if task != nil {
+		// Hashing tasks into multiple schedulers only works in a single thread.
+		seq++
+		buckets[seq%numBuckets].Schedule(task)
+	}
+}
 
 // Scheduler represents a task scheduler.
 type Scheduler interface {
@@ -45,7 +66,6 @@ type Options struct {
 func DefaultOptions() *Options {
 	return &Options{
 		Threshold: threshold,
-		IdleTime:  idleTime,
 		Interval:  interval,
 	}
 }
@@ -126,6 +146,7 @@ type scheduler struct {
 	cond          sync.Cond
 	wg            sync.WaitGroup
 	pending       []func()
+	tasks         int64
 	running       map[*worker]struct{}
 	workers       int
 	maxWorkers    int
@@ -137,6 +158,10 @@ type scheduler struct {
 
 // New returns a new task scheduler.
 func New(maxWorkers int, opts *Options) Scheduler {
+	return newScheduler(maxWorkers, opts)
+}
+
+func newScheduler(maxWorkers int, opts *Options) *scheduler {
 	// If the max number of workers is not greater than zero, the number of goroutines will not be limited.
 	if maxWorkers <= 0 {
 		maxWorkers = Unlimited
@@ -144,20 +169,19 @@ func New(maxWorkers int, opts *Options) Scheduler {
 	if opts == nil {
 		opts = DefaultOptions()
 	} else {
-		if opts.IdleTime <= 0 {
-			opts.IdleTime = idleTime
-		}
 		if opts.Interval <= 0 {
 			opts.Interval = interval
 		}
 	}
 	s := &scheduler{
-		running:    make(map[*worker]struct{}),
 		maxWorkers: maxWorkers,
 		opts:       *opts,
 	}
-	s.cond.L = &s.lock
-	m.register(s)
+	if s.opts.IdleTime > 0 {
+		s.running = make(map[*worker]struct{})
+		s.cond.L = &s.lock
+		m.register(s)
+	}
 	return s
 }
 
@@ -169,10 +193,13 @@ func (s *scheduler) Schedule(task func()) {
 		}
 		return
 	}
+	tasks := atomic.AddInt64(&s.tasks, 1)
 	s.lock.Lock()
-	if len(s.pending)+1 > len(s.running) && (s.maxWorkers == Unlimited || len(s.running) < s.maxWorkers) {
+	if int(tasks) > s.workers && (s.maxWorkers == Unlimited || s.workers < s.maxWorkers) {
 		w := &worker{}
-		s.running[w] = struct{}{}
+		if s.opts.IdleTime > 0 {
+			s.running[w] = struct{}{}
+		}
 		s.workers++
 		s.wg.Add(1)
 		go w.run(s, task)
@@ -180,7 +207,9 @@ func (s *scheduler) Schedule(task func()) {
 	} else {
 		s.pending = append(s.pending, task)
 		s.lock.Unlock()
-		s.cond.Signal()
+		if s.opts.IdleTime > 0 {
+			s.cond.Signal()
+		}
 	}
 }
 
@@ -196,24 +225,28 @@ func (s *scheduler) NumWorkers() int {
 func (s *scheduler) Close() {
 	if atomic.CompareAndSwapInt32(&s.closed, 0, 1) {
 		s.lock.Lock()
-		for w := range s.running {
-			w.close()
+		if s.opts.IdleTime > 0 {
+			for w := range s.running {
+				w.close()
+			}
+			s.running = make(map[*worker]struct{})
 		}
-		s.running = make(map[*worker]struct{})
 		for _, task := range s.pending {
 			task()
 		}
 		s.pending = s.pending[:0]
 		s.lock.Unlock()
-		s.cond.Broadcast()
-		for {
-			if s.NumWorkers() == 0 {
-				break
-			}
+		if s.opts.IdleTime > 0 {
 			s.cond.Broadcast()
-			time.Sleep(time.Millisecond)
+			for {
+				if s.NumWorkers() == 0 {
+					break
+				}
+				s.cond.Broadcast()
+				time.Sleep(time.Millisecond)
+			}
+			m.unregister(s)
 		}
-		m.unregister(s)
 	}
 	s.wg.Wait()
 }
@@ -225,11 +258,6 @@ func (s *scheduler) check() {
 			s.lastIdleTime = time.Now()
 		} else if time.Since(s.lastIdleTime) > s.opts.IdleTime {
 			deletions := len(s.running) - len(s.pending)
-			if deletions > 4 {
-				deletions = deletions / 2
-			} else if deletions > 0 {
-				deletions = 1
-			}
 			for w := range s.running {
 				delete(s.running, w)
 				w.close()
@@ -258,9 +286,11 @@ func (w *worker) run(s *scheduler, task func()) {
 			for _, task = range batch {
 				task()
 			}
+			atomic.AddInt64(&s.tasks, -int64(len(batch)))
 			batch = batch[:0]
 		} else {
 			task()
+			atomic.AddInt64(&s.tasks, -1)
 		}
 		s.lock.Lock()
 		for {
@@ -273,6 +303,12 @@ func (w *worker) run(s *scheduler, task func()) {
 				task = s.pending[0]
 				s.pending = s.pending[1:]
 				break
+			}
+			if s.opts.IdleTime <= 0 {
+				s.workers--
+				s.lock.Unlock()
+				s.wg.Done()
+				return
 			}
 			s.cond.Wait()
 			if atomic.LoadInt32(&s.closed) > 0 || atomic.LoadInt32(&w.closed) > 0 {

@@ -289,4 +289,15 @@ func TestSchedulerOptions(t *testing.T) {
 		s.Close()
 		wg.Wait()
 	}
+	{
+		wg := &sync.WaitGroup{}
+		for i := 0; i < 1024; i++ {
+			wg.Add(1)
+			job := func() {
+				wg.Done()
+			}
+			Schedule(job)
+		}
+		wg.Wait()
+	}
 }
